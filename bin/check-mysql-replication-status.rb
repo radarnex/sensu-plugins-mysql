@@ -83,45 +83,67 @@ class CheckMysqlReplicationStatus < Sensu::Plugin::Check::CLI
          # #YELLOW
          proc: lambda { |s| s.to_i } # rubocop:disable Lambda
 
+   def credentials
+     if config[:ini]
+       ini = IniFile.load(config[:ini])
+       section = ini['client']
+       db_host = section['host']
+       db_user = section['user']
+       db_pass = section['password']
+       db_socket = section['socket']
+     else
+       db_host = config[:host]
+       db_user = config[:user]
+       db_pass = config[:password]
+       db_socket = config[:socket]
+     end
+     [db_host, db_user, db_pass, db_socket]
+   end
+
+  def master_connection
+    master_connection = config[:master_connection]
+    [master_connection]
+  end
+
+  def db_flavor
+    db_flavor = nil
+    db_flavor_version = db.query 'SHOW VARIABLES LIKE "version_comment"'
+    db_flavor_version.each_hash do |row|
+      if row['Value'].include? 'mariadb'
+        db_flavor = 'mariadb'
+      elsif row['Value'].include? 'MySQL'
+        db_flavor = 'mysql'
+      elsif row['Value'].include? 'Percona'
+        db_flavor = 'percona'
+      else
+        db_flavor = 'unknown'
+      end
+
+    return db_flavor
+  end
+
   def run
-    if config[:ini]
-      ini = IniFile.load(config[:ini])
-      section = ini['client']
-      db_user = section['user']
-      db_pass = section['password']
-    else
-      db_user = config[:user]
-      db_pass = config[:pass]
-    end
-    db_host = config[:host]
-    db_conn = config[:master_connection]
+    db_host = credentials[0]
+    db_user = credentials[1]
+    db_pass = credentials[2]
+    db_socket = credentials[3]
 
     if [db_host, db_user, db_pass].any?(&:nil?)
       unknown 'Must specify host, user, password'
     end
 
+    db_conn = master_connection[0]
+
     begin
       db = Mysql.new(db_host, db_user, db_pass, nil, config[:port], config[:socket])
 
-      db_flavor = ''
-      db_flavor_version = db.query 'SHOW VARIABLES LIKE "version_comment"'
-      db_flavor_version.each_hash do |row|
-        if row['Value'].include? 'mariadb'
-          db_flavor = 'mariadb'
-        elsif row['Value'].include? 'MySQL'
-          db_flavor = 'mysql'
-        elsif row['Value'].include? 'Percona'
-          db_flavor = "percona"
-        else
-          db_flavor = 'unknown'
-        end
-      end
+      flavor = db_flavor
 
       results = if db_conn.nil?
                   db.query 'SHOW SLAVE STATUS'
-                elsif db_flavor.include? 'mariadb'
+                elsif flavor.include? 'mariadb'
                   db.query "SHOW SLAVE '#{db_conn}' STATUS"
-                elsif db_flavor.include? 'mysql' || 'percona'
+                elsif flavor.include? 'mysql' || flavor.include? 'percona'
                   db.query "SHOW SLAVE STATUS FOR CHANNEL '#{db_conn}'"
                 end
 
